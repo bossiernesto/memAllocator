@@ -1,16 +1,15 @@
-#include <stdio.h>
-#include <stdbool.h>
-#include <cspecs/cspec.h>
+#include <stdlib.h>
+#include <string.h>
+#include "../lib_cspec/cspec.h"
 #include "../src/memoryAlloc.c"
 
 
-int main(int argc, char **argv) {
-    context (MemoryAllocator) {
-        describe("Describe de ejemplo") {
+context (MemoryAllocator) {
+    describe("re") { }
+    end
 
-        } end
-    }
 }
+
 
 
 

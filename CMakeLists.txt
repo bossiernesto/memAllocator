@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 2.8)
 project(gcc_dojo)
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}" -lcspecs)
 
 add_subdirectory(lib_cspec)
 add_subdirectory(src)

@@ -1,229 +1,302 @@
-/*
- * cspec.c
- *
- *      Author: Federico Scarpa
- */
-
-#include "cspec.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "cspec.h"
 
-static int DESCRIBE_DEEP_LEVEL = 0;
+FILE* devNull;
 
-static int PENDING_SHOULDS = 0;
-static int SUCCESS_SHOULDS = 0;
-static int FAILURE_SHOULDS = 0;
+__attribute__((constructor)) void init() {
+    devNull = fopen("/dev/null", "w");
+}
 
-static int IT_FAILURES_SHULDS = 0;
+#define MAX_SHOULDS_PER_IT 64
+#define MAX_CHAINS_HOOKS 64
 
 #define DESCRIBE_COLOR      "\x1b[0m"
 #define FAILURE_COLOR       "\x1b[38;5;1m"
 #define SUCCESS_COLOR       "\x1b[38;5;2m"
-#define PENDING_COLOR       "\x1b[38;5;3m"
+#define PENDING_COLOR       "\x1b[38;5;6m"
 #define NO_COLOR            "\x1b[0m"
+#define UNDERLINE           "\x1b[4m"
+#define BOLD                "\x1b[1m"
 
-#define DESCRIBE_BULLET     ""
 #define FAILURE_BULLET      "✖ "
 #define SUCCESS_BULLET      "✔ "
 #define PENDING_BULLET      "• "
+#define DESCRIBE_BULLET     ""
 
+typedef struct _should {
+    Int     line;
+    String  file;
+    String  error;
+} Should;
 
-typedef enum {
-    cbool, cchar, cshort, cint, clong, cdouble, cfloat, cstring, cptr
-} cspec_type_t;
+typedef struct _it {
+    String _describe;
+    String description;
+    Bool is_failure;
+    Should* shoulds[MAX_SHOULDS_PER_IT];
+} It;
 
-typedef union {
-    char cbool;
-    char cchar;
-    short cshort;
-    int cint;
-    long clong;
-    double cdouble;
-    float cfloat;
-    char* cstring;
-    void* cptr;
-} _union_t;
+Int IT_COUNT            = 0;
+Int SHOULD_COUNT        = 0;
+Int PENDING_COUNT       = 0;
+Int DESCRIBE_DEEP_LEVEL = 0;
 
-typedef struct {
-    char* file;
-    char* format;
-    cspec_type_t type;
-    _union_t actual;
-    _union_t expected;
-} _should_t;
+String CURRENT_DESCRIBE = "";
 
-#define MAX_COUNT 1024
-static _should_t* SHOULDS[] = { [ 0 ... (MAX_COUNT - 1)] = NULL };
-static int SHOULD_COUNT = 0;
+Function AFTERS[MAX_CHAINS_HOOKS];
+Function BEFORES[MAX_CHAINS_HOOKS];
 
-#define print_description(description, add_desc, spaces_str, type) {                                        \
-    char* spaces = get_spaces();                                                                            \
-    printf("%s%s%s%s%s%s%s\n", spaces, spaces_str, type##_##COLOR,                                          \
-            type##_##BULLET, description, add_desc, NO_COLOR);                                              \
-    free(spaces);                                                                                           \
-}                                                                                                           \
+It**  ITS;
 
 // ---------------------------------------------------------------------------
-// ----- PRIVATES -----
+// ----- PRIVATE -----
 // ---------------------------------------------------------------------------
 
-    char* get_spaces();
-    void _cspec_print_report();
-    void _cspec_print_should_report();
+char*   __get_template (Bool neg, String format);
+It*     __it_create    (String description);
+It*     __current_it   ();
+int     __report       (void);
+Should* __should_create(String error, String file, Int line);
+void    __print_current_it_result();
+void    __print_it_result_detail(It* _it, int failure_count);
+char*   __get_spaces();
+void    __after_execute();
+void    __before_execute();
 
-// ---------------------------------------------------------------------------
-// ----- "PUBLICS" -----
-// ---------------------------------------------------------------------------
-
-    void _cspec_describe_pre(const char* description) {
-        if (DESCRIBE_DEEP_LEVEL == 0) puts("");
-        DESCRIBE_DEEP_LEVEL++;
-        print_description(description, "", "", DESCRIBE);
+#define print_description(description, add_desc, spaces_str, separator, type) { \
+        char* spaces = __get_spaces();                                              \
+        printf("%s%s%s%s%s%s%s%s\n", spaces, spaces_str, type##_##COLOR,            \
+                type##_##BULLET, description, separator, add_desc, NO_COLOR);       \
+        free(spaces);                                                               \
     }
 
-    void _cspec_describe_post(const char* description) {
-        DESCRIBE_DEEP_LEVEL--;
-    }
+// ---------------------------------------------------------------------------
+// ----- STUB MAIN -----
+// ---------------------------------------------------------------------------
 
-    void _cspec_it_pre(const char* description) {
-        IT_FAILURES_SHULDS = 0;
-    }
+int main(void) {
+    return __report();
+}
 
-    void _cspec_it_post(const char* description) {
-        if (IT_FAILURES_SHULDS != 0) {
-            print_description(description, "", "  ", FAILURE);
-            _cspec_print_should_report();
-        } else {
-            SUCCESS_SHOULDS++;
-            print_description(description, "", "  ", SUCCESS);
+// ---------------------------------------------------------------------------
+// ----- Describe -----
+// ---------------------------------------------------------------------------
+
+void __describe_pre(String description) {
+    if (DESCRIBE_DEEP_LEVEL == 0) puts("");
+    AFTERS [DESCRIBE_DEEP_LEVEL] = NULL;
+    BEFORES[DESCRIBE_DEEP_LEVEL] = NULL;
+    DESCRIBE_DEEP_LEVEL++;
+    CURRENT_DESCRIBE = description;
+    print_description(description, "", "", "", DESCRIBE);
+}
+
+void __describe(String description, Function function) {
+    __describe_pre(description);
+    function();
+    __describe_post(description);
+}
+
+void __describe_post(String description) {
+    DESCRIBE_DEEP_LEVEL--;
+    AFTERS [DESCRIBE_DEEP_LEVEL] = NULL;
+    BEFORES[DESCRIBE_DEEP_LEVEL] = NULL;
+}
+
+// ---------------------------------------------------------------------------
+// ----- IT -----
+// ---------------------------------------------------------------------------
+
+void __it_pre(String description) {
+    ITS = realloc(ITS, sizeof(It*) * (++IT_COUNT));
+    ITS[IT_COUNT - 1] = __it_create(description);
+    SHOULD_COUNT = 0;
+}
+
+void __it(String description, Function function) {
+    __before_execute();
+    __it_pre(description);
+    function();
+    __it_post(description);
+    __after_execute();
+}
+
+void __it_post(String description) {
+    __print_current_it_result();
+}
+
+void __skip(String description, Function function) {
+    PENDING_COUNT++;
+    print_description(description, "", "  ", "", PENDING);
+}
+
+// ---------------------------------------------------------------------------
+// ----- HOOKS -----
+// ---------------------------------------------------------------------------
+
+void __before(Function function) {
+    BEFORES[DESCRIBE_DEEP_LEVEL - 1] = function;
+}
+
+void __after(Function function) {
+    AFTERS[DESCRIBE_DEEP_LEVEL - 1] = function;
+}
+
+// ---------------------------------------------------------------------------
+// ----- SHOULDS -----
+// ---------------------------------------------------------------------------
+
+__should_declaration(boolp, String);
+
+#define __should_definition(suffix, type, comparator, format)                                   \
+        void __should_##suffix(String file, Int line, type actual, Bool negated, type expected) {   \
+            It* _it = __current_it();                                                               \
+            Bool is_failure = negated ? (comparator) : !(comparator);                               \
+            if (is_failure) {                                                                       \
+                _it->is_failure = true;                                                             \
+                String template = __get_template(negated, format);                                  \
+                int message_size = fprintf(devNull, template, expected, actual);                    \
+                String error = malloc(message_size + 1);                                            \
+                sprintf(error, template, expected, actual);                                         \
+                _it->shoulds[SHOULD_COUNT++] = __should_create(error, file, line);                  \
+                free(template);                                                                     \
+            }                                                                                       \
+        }                                                                                           \
+
+void __should_bool(String file, Int line, Bool actual, Bool negated, Bool expected) {
+    char* to_s(Bool p) { return p ? "true" : "false"; }
+    __should_boolp(file, line, to_s(actual), negated, to_s(expected));
+}
+
+__should_definition(boolp , String, strcmp(actual, expected) == 0 , "%s"    );
+__should_definition(char  , char  , actual == expected            , "%c"    );
+__should_definition(short , short , actual == expected            , "%i"    );
+__should_definition(int   , int   , actual == expected            , "%i"    );
+__should_definition(long  , long  , actual == expected            , "%l"    );
+__should_definition(double, double, actual == expected            , "%f"    );
+__should_definition(float , float , actual == expected            , "%f"    );
+__should_definition(ptr   , void* , actual == expected            , "%p"    );
+__should_definition(string, String, strcmp(actual, expected) == 0 , "\"%s\"");
+
+// ---------------------------------------------------------------------------
+// ----- PRIVATE -----
+// ---------------------------------------------------------------------------
+
+It* __it_create(String description) {
+    It* self = malloc(sizeof(It));
+    self->description = description;
+    self->_describe = CURRENT_DESCRIBE;
+    self->is_failure = false;
+    int i; for (i = 0; i < MAX_SHOULDS_PER_IT; self->shoulds[i++] = NULL);
+    return self;
+}
+
+void __it_destroy(It* self) {
+    free(self);
+}
+
+Should* __should_create(String error, String file, Int line) {
+    Should* self = malloc(sizeof(Should));
+    self->error = error;
+    self->file = file;
+    self->line = line;
+    return self;
+}
+
+void __should_destroy(Should* self) {
+    free(self->error);
+    free(self);
+}
+
+#define VALUE NO_COLOR "%s" NO_COLOR
+
+char* __get_template(Bool neg, String format) {
+    char* template = malloc(128);
+    memset(template, '\0', 128);
+    sprintf(template, "%sxpected <" VALUE "> but was <" VALUE ">", !neg ? "E" : "Not e", format, format);
+    return template;
+}
+
+int __report(void) {
+    puts("\n");
+    puts("  " "\x1b[4m" "Summary\n" NO_COLOR);
+    int i, failure_count = 0;
+    for (i = 0; i < IT_COUNT; i++) {
+        It* _it = ITS[i];
+        if (_it->is_failure) {
+            failure_count++;
+            __print_it_result_detail(_it, failure_count);
         }
+        __it_destroy(_it);
     }
+    free(ITS);
+    fclose(devNull);
+    printf(SUCCESS_COLOR "  %d success\n" NO_COLOR, IT_COUNT - failure_count);
+    if (failure_count > 0) printf(FAILURE_COLOR "  %d failure\n" NO_COLOR, failure_count);
+    if (PENDING_COUNT > 0) printf(PENDING_COLOR "  %d pending\n" NO_COLOR, PENDING_COUNT);
+    puts("");
+    return failure_count;
+}
 
-    void _cspec_should_power(const char* filename, int line, void* actual, int(*f)(void*, void*), void* expected) {
-        _cspec_should(f(actual, expected), filename, line);
-    }
-
-    void _cspec_should(int boolean, const char* filename, int line) {
-        if (IT_FAILURES_SHULDS == 0 && !boolean) {
-            FAILURE_SHOULDS++;
-            IT_FAILURES_SHULDS++;
-        }
-    }
-
-    void _cspec_skip(const char* description) {
-        PENDING_SHOULDS++;
-        print_description(description, " (WTF - SKIPPED)", "  ", PENDING);
-    }
-
-    #define print_result(description, type) {                                                   \
-        if (type##_##SHOULDS > 0) {                                                             \
-            printf("%s  %i %s%s\n", type##_##COLOR, type##_##SHOULDS, description, NO_COLOR);   \
-        }                                                                                       \
-    }                                                                                           \
-
-    int _cspec_get_result(void) {
-        _cspec_print_report();
-        return FAILURE_SHOULDS;
-    }
-
-    int _cspec_should_be() {
-        return 0;
-    }
-
-    int _cspec_should_not_be() {
-        return 1;
-    }
-
-    int _cspec_should_be_true() {
-        return 1;
-    }
-
-    int _cspec_should_be_false() {
-        return 0;
-    }
-
-    void* _cspec_should_be_null() {
-        return NULL;
-    }
-
-    #define __should_create(fmt, filename, real_type, act, exp, negated) ({     \
-        _should_t* should = malloc(sizeof(_should_t));                          \
-        should->file = file;                                                    \
-        char* frmt = malloc(100); /* MAGIC NUMBER */                            \
-        if (!negated) strcpy(frmt,"Expected <" fmt "> but was <" fmt ">");      \
-        else strcpy(frmt,"Not expected <" fmt "> but was <" fmt ">");           \
-        should->format = frmt;                                                  \
-        should->type = real_type;                                               \
-        should->actual.real_type = act;                                         \
-        should->expected.real_type = exp;                                       \
-        should;                                                                 \
-    })                                                                          \
-
-    #define __should_def(type, actual, fmt, comparator)                                                         \
-        void _cspec_should_##type(char* file, int line, t_c##type actual, int negated, t_c##type expected) {    \
-            int bool = comparator;                                                                              \
-            bool = negated ? !(bool) : (bool);                                                                  \
-            if (!bool) SHOULDS[SHOULD_COUNT++] = __should_create(fmt, file, c##type, actual, expected, negated);\
-            if (IT_FAILURES_SHULDS == 0 && !bool) {                                                             \
-                FAILURE_SHOULDS++;                                                                              \
-                IT_FAILURES_SHULDS++;                                                                           \
-            }                                                                                                   \
-        }                                                                                                       \
-
-    __should_def(bool, actual, "%s", !!actual == !!expected)
-    __should_def(char, actual, "%c", actual == expected)
-    __should_def(short, actual, "%h", actual == expected)
-    __should_def(int, actual, "%i", actual == expected)
-    __should_def(long, actual, "%l", actual == expected)
-    __should_def(double, actual, "%f", actual == expected)
-    __should_def(float, actual, "%f", actual == expected)
-    __should_def(string, actual, "%s", strcmp(actual, expected) == 0)
-    __should_def(ptr, actual, "%p", actual == expected)
+It* __current_it() {
+    return ITS[IT_COUNT - 1];
+}
 
 // ---------------------------------------------------------------------------
-// ----- PRIVATES -----
+// ----- FANCY REPORT -----
 // ---------------------------------------------------------------------------
 
-    char* get_spaces() {
-        int spaces_count = 2 * DESCRIBE_DEEP_LEVEL;
-        char* spaces = malloc(spaces_count + 1);
-        memset(spaces, ' ', spaces_count);
-        spaces[spaces_count] = '\0';
-        return spaces;
-    }
+void print_failure_description(It* _it, int failure_count, char* extra_spaces) {
+    char* spaces = __get_spaces();
+    printf("%s%s%s%s%d%s%s%s%s%s\n", spaces, "  ", extra_spaces, FAILURE_COLOR, failure_count, ") " , _it->_describe, " - ", _it->description, NO_COLOR);
+    free(spaces);
+}
 
-    void _cspec_print_report() {
-        puts("");
-        print_result("Success", SUCCESS);
-        print_result("Pending", PENDING);
-        print_result("Failure", FAILURE);
-        puts("");
+int failure_count_it = 0;
+void __print_current_it_result() {
+    It* _it = __current_it();
+    if (_it->is_failure) {
+        failure_count_it++;
+        print_failure_description(_it, failure_count_it, "");
+    } else {
+        print_description(_it->description, "", "  ", "", SUCCESS);
     }
+}
 
-    void _cspec_print_should_report() {
-        int i;
-        char* spaces = get_spaces();
-        for(i = 0; i < MAX_COUNT && SHOULDS[i] != NULL; i++) {
-            _should_t* should = SHOULDS[i];
-            printf("%s    " FAILURE_BULLET, spaces);
-            char* bool(_union_t b) { return b.cbool != 0 ? "true" : "false"; }
-            switch (should->type) {
-                case cbool:   { printf(should->format, bool(should->expected), bool(should->actual));     break; }
-                case cchar:   { printf(should->format, should->expected.cchar, should->actual.cchar);     break; }
-                case cshort:  { printf(should->format, should->expected.cshort, should->actual.cshort);   break; }
-                case cint:    { printf(should->format, should->expected.cint, should->actual.cint);       break; }
-                case clong:   { printf(should->format, should->expected.clong, should->actual.clong);     break; }
-                case cdouble: { printf(should->format, should->expected.cdouble, should->actual.cdouble); break; }
-                case cfloat:  { printf(should->format, should->expected.cfloat, should->actual.cfloat);   break; }
-                case cstring: { printf(should->format, should->expected.cstring, should->actual.cstring); break; }
-                case cptr:    { printf(should->format, should->expected.cptr, should->actual.cptr);       break; }
-                default: break;
-            }
-            printf(" - %s\n", should->file);
-            free(should->format);
-            free(should);
-            SHOULDS[i] = NULL;
-        }
+void __print_it_result_detail(It* _it, int failure_count) {
+    print_failure_description(_it, failure_count, "  ");
+
+    int j; for (j = 0; j < MAX_SHOULDS_PER_IT && _it->shoulds[j] != NULL; j++) {
+        Should* _should = _it->shoulds[j];
+        char* spaces = __get_spaces();
+        printf("%s      - %s [%s:%d]\n", spaces, _should->error, _should->file, _should->line);
+        __should_destroy(_should);
         free(spaces);
     }
+    puts("");
+}
+
+char* __get_spaces() {
+    int spaces_count = 2 * DESCRIBE_DEEP_LEVEL;
+    char* spaces = malloc(spaces_count + 1);
+    memset(spaces, ' ', spaces_count);
+    spaces[spaces_count] = '\0';
+    return spaces;
+}
+
+void __before_execute() {
+    int i;
+    for(i = 0; i < DESCRIBE_DEEP_LEVEL; i++)
+        if (BEFORES[i] != NULL)
+            BEFORES[i]();
+}
+
+void __after_execute() {
+    int i;
+    for(i = DESCRIBE_DEEP_LEVEL - 1; i >= 0; i--)
+        if (AFTERS[i] != NULL)
+            AFTERS[i]();
+}
+

@@ -7,173 +7,87 @@
 #ifndef CSPEC_H_
 #define CSPEC_H_
 
-#ifdef __cplusplus
+#include <stdbool.h>
 
-    #define __function(body)                            \
-        struct Local {                                  \
-            static void body;                           \
-        };                                              \
-        Local::                                         \
+// ---------------------------------------------------------------------------
+// ----- TYPES -----
+// ---------------------------------------------------------------------------
 
-    #define __lambda(ret, body) ({                      \
-        struct Local {                                  \
-            static ret _$ body;                         \
-        };                                              \
-        (void*)(Local::_$;)                             \
-    })                                                  \
+typedef char* String;
+typedef void(*Function)(void);
+typedef bool Bool;
+typedef int Int;
 
-    #define __f_agn(var, body)                          \
-        struct Local {                                  \
-            static void body;                           \
-        };                                              \
-        var = Local::function;                          \
+// ---------------------------------------------------------------------------
+// ----- DECLARATION -----
+// ---------------------------------------------------------------------------
 
-    extern "C" {
+void __describe_pre (String description);
+void __describe     (String description, Function function);
+void __describe_post(String description);
 
-#else
+void __it_pre (String description);
+void __it     (String description, Function function);
+void __it_post(String description);
 
-    #define __function(body)                void body;
-    #define __lambda(ret, body)             (void*)({ ret _$ body; _$; })
-    #define __f_agn(var, body)              void body; var = function;
+void __skip   (String description, Function function);
 
-#endif
+void __after  (Function function);
+void __before (Function function);
 
-    #include <string.h>
-    #include <stdlib.h>
+#define __should_declaration(suffix, type)                                                  \
+            void __should_##suffix(String file, Int line, type actual, Bool negated, type expected)
 
-    #ifndef DEFAULT_MAX_SUITES
-        #define DEFAULT_MAX_SUITES 1024
-    #endif
+__should_declaration(bool  , Bool);
+__should_declaration(char  , char  );
+__should_declaration(short , short );
+__should_declaration(int   , int   );
+__should_declaration(long  , long  );
+__should_declaration(double, double);
+__should_declaration(float , float );
+__should_declaration(ptr   , void* );
+__should_declaration(string, char* );
 
-    #define CSPEC(name, block)                                                          \
-        __attribute__ ((constructor))                                                   \
-        void _suite_name_##name(void) {                                                 \
-            __function(block); function();                                              \
-        }                                                                               \
+// ---------------------------------------------------------------------------
+// ----- MACROS API -----
+// ---------------------------------------------------------------------------
 
-    void _cspec_describe_pre(const char* description);
-    void _cspec_describe_post(const char* description);
+#define context(name)     __attribute__((constructor)) void cspec_context_##name()
 
-    void _cspec_it_pre(const char* description);
-    void _cspec_it_post(const char* description);
+#define describe(desc)    __describe(desc, ({ void __$__()
+#define it(desc)          __it      (desc, ({ void __$__()
+#define skip(desc)        __skip    (desc, ({ void __$__()
 
-    void _cspec_skip(const char* description);
-    void _cspec_should(int boolean, const char* filename, int line);
+#define after             __after (({ void __$__()
+#define before            __before(({ void __$__()
 
-    int _cspec_get_result(void);
+#define end               __$__;}));
 
-    static void __cspec_noop() {}
+// ---------------------------------------------------------------------------
+// ----- MACROS SHOULD -----
+// ---------------------------------------------------------------------------
 
-    static void(*__before)(void) = __cspec_noop;
-    static void(*__after)(void) = __cspec_noop;
+#define __should_call(suffix, actual)   __should_##suffix(__FILE__, __LINE__, (actual),
 
-    #define describe(description, block) {                      \
-        _cspec_describe_pre(description);                       \
-        __function(block) function();                           \
-        _cspec_describe_post(description);                      \
-    }                                                           \
+#define should_bool(actual)             __should_call(bool  , actual)
+#define should_char(actual)             __should_call(char  , actual)
+#define should_short(actual)            __should_call(short , actual)
+#define should_int(actual)              __should_call(int   , actual)
+#define should_long(actual)             __should_call(long  , actual)
+#define should_double(actual)           __should_call(double, actual)
+#define should_float(actual)            __should_call(float , actual)
+#define should_ptr(actual)              __should_call(ptr   , actual)
+#define should_string(actual)           __should_call(string, actual)
 
-    #define it(description, block) {                            \
-        __before();                                             \
-        _cspec_it_pre(description);                             \
-        __function(block) function();                           \
-        _cspec_it_post(description);                            \
-        __after();                                              \
-    }                                                           \
+#define should(actual)    should_int(actual)
 
-    #define skip(description, block) {                          \
-        _cspec_skip(description);                               \
-    }                                                           \
+#define not               !
+#define be                false
 
-    #define before(block)                                       \
-        static void(*__before)(void);                           \
-        { __f_agn(__before, block); }                           \
-
-    #define after(block)                                        \
-        static void(*__after)(void);                            \
-        { __f_agn(__after, block); }                            \
-
-    #define _should(boolean) {                                  \
-        _cspec_should(boolean, __FILE__, __LINE__);             \
-    }                                                           \
-
-    #define should_be_true(bool)        _should((bool))
-    #define should_be_false(bool)       _should(!(bool))
-
-    #define should_be_null(ptr)         _should((ptr) == NULL)
-    #define should_not_be_null(ptr)     _should((ptr) != NULL)
-
-    #define should_be_equals(expected, actual)          _should((actual) == (expected))
-    #define should_not_be_equals(expected, actual)      _should((actual) != (expected))
-
-    #define should_be_equals_strings(expected, actual)      _should(strcmp(actual, expected) == 0)
-    #define should_not_be_equals_strings(expected, actual)  _should(strcmp(actual, expected) != 0)
-
-
-    // ---------------------------------------------------------------------------
-    // ----- DSL -----
-    // ---------------------------------------------------------------------------
-
-    #include <stdint.h>
-
-    int _cspec_should_be();
-    int _cspec_should_not_be();
-
-    int _cspec_should_be_true();
-    int _cspec_should_be_false();
-    void* _cspec_should_be_null();
-
-    typedef int8_t  t_cbool;
-    typedef int8_t  t_cchar;
-    typedef int16_t t_cshort;
-    typedef int32_t t_cint;
-    typedef int64_t t_clong;
-    typedef double  t_cdouble;
-    typedef float   t_cfloat;
-    typedef char*   t_cstring;
-    typedef void*   t_cptr;
-
-    #define __should_type(type)                                                                             \
-        void _cspec_should_##type(char* file, int line, t_c##type actual, int negated, t_c##type expected);
-
-    #define __should_call(type, actual) \
-        _cspec_should_##type(__FILE__, __LINE__, (actual),
-
-    __should_type(bool)
-    __should_type(char)
-    __should_type(short)
-    __should_type(int)
-    __should_type(long)
-    __should_type(double)
-    __should_type(float)
-    __should_type(string)
-    __should_type(ptr)
-
-    #define should_bool(actual)     __should_call(bool, actual)
-    #define should_char(actual)     __should_call(char, actual)
-    #define should_short(actual)    __should_call(short, actual)
-    #define should_int(actual)      __should_call(int, actual)
-    #define should_long(actual)     __should_call(long, actual)
-    #define should_double(actual)   __should_call(double, actual)
-    #define should_float(actual)    __should_call(float, actual)
-    #define should_string(actual)   __should_call(string, actual)
-    #define should_ptr(actual)      __should_call(ptr, actual)
-    #define should(actual)          __should_call(ptr, actual)
-
-    #define be                      _cspec_should_be(),
-    #define not_be                  _cspec_should_not_be(),
-
-    #define null                    _cspec_should_be_null())
-    #define truthy                  _cspec_should_be_true())
-    #define falsey                  _cspec_should_be_false())
-
-    #define equal                   (
-    #define to(expected)            expected))
-
-    #define CSPEC_RESULT            _cspec_get_result();
-
-#ifdef __cplusplus
-    }
-#endif
+#define truthy            , true)
+#define falsey            , false)
+#define null              , NULL)
+#define equal             ,
+#define to(expected)      expected)
 
 #endif /* CSPEC_H_ */
